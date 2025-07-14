@@ -1,6 +1,0 @@
-Domain,Username,PHP_Version,Document_Root,Database_Name,Database_User,Database_Exists,Directory_Size
-bukuwisuda.univbatam.ac.id,bukuwisuda_univbatam_ac_id,8.2,/home/bukuwisuda_univbatam_ac_id/public_html,bukuwisuda_univbatam_ac_id_db,bukuwisuda_univbatam_ac_id,Yes,379M
-cbtfk.univbatam.ac.id,cbtfk_univbatam_ac_id,8.2,/home/cbtfk_univbatam_ac_id/public_html,cbtfk_univbatam_ac_id_db,cbtfk_univbatam_ac_id,Yes,86M
-demolppm.univbatam.ac.id,demolppm_univbatam_ac_id,8.2,/home/demolppm_univbatam_ac_id/public_html/public,demolppm_univbatam_ac_id_db,demolppm_univbatam_ac_id,Yes,25M
-demoo.univbatam.ac.id,demoo_univbatam_ac_id,8.4,/home/demoo_univbatam_ac_id/univbatam/public,demoo_univbatam_ac_id_db,demoo_univbatam_ac_id,Yes,30M
-eoffice.univbatam.ac.id,eoffice_univbatam_ac_id,7.4,/home/eoffice_univbatam_ac_id/public_html,eoffice_univbatam_ac_id_db,eoffice_univbatam_ac_id,Yes,168M
