@@ -227,13 +227,178 @@ chown root:root "$PASSLOG" "$MYSQLLOG" 2>/dev/null || true
 
 echo "✅ Directories and log files prepared"
 
-# Validasi SSL certificate
-if [ ! -f "/etc/ssl/univbatam/fullchain.crt" ] || [ ! -f "/etc/ssl/univbatam/private.key" ]; then
-    echo "❌ SSL certificate tidak ditemukan!"
-    echo "   Pastikan file berikut ada:"
-    echo "   - /etc/ssl/univbatam/fullchain.crt"
-    echo "   - /etc/ssl/univbatam/private.key"
-    exit 1
+# Fungsi untuk membuat self-signed certificate
+create_self_signed_cert() {
+    local domain=$1
+    local ssl_dir="/etc/ssl/websites/$domain"
+    
+    echo "🔐 Membuat self-signed SSL certificate untuk $domain..."
+    
+    # Buat direktori SSL
+    mkdir -p "$ssl_dir"
+    
+    # Generate private key
+    openssl genrsa -out "$ssl_dir/private.key" 2048
+    
+    # Generate certificate
+    openssl req -new -x509 -key "$ssl_dir/private.key" -out "$ssl_dir/fullchain.crt" -days 365 -subj "/CN=$domain"
+    
+    # Set permissions
+    chmod 600 "$ssl_dir/private.key"
+    chmod 644 "$ssl_dir/fullchain.crt"
+    chown root:root "$ssl_dir/private.key" "$ssl_dir/fullchain.crt"
+    
+    echo "✅ Self-signed certificate berhasil dibuat"
+    echo "   Certificate: $ssl_dir/fullchain.crt"
+    echo "   Private Key: $ssl_dir/private.key"
+    
+    # Set SSL paths
+    SSL_CERT_PATH="$ssl_dir/fullchain.crt"
+    SSL_KEY_PATH="$ssl_dir/private.key"
+}
+
+# Fungsi untuk setup Let's Encrypt
+setup_letsencrypt() {
+    local domain=$1
+    
+    echo "🔐 Setting up Let's Encrypt untuk $domain..."
+    
+    # Pastikan domain dapat diakses (basic website sudah aktif)
+    echo "   Memverifikasi domain dapat diakses..."
+    
+    # Test domain accessibility
+    if ! curl -s -I "http://$domain" | grep -q "200\|301\|302"; then
+        echo "❌ Domain $domain tidak dapat diakses dari internet"
+        echo "   Let's Encrypt memerlukan domain yang dapat diakses public"
+        echo "   Pastikan:"
+        echo "   - Domain sudah pointing ke IP server ini"
+        echo "   - Firewall membuka port 80 dan 443"
+        echo "   - Website sudah aktif"
+        return 1
+    fi
+    
+    # Generate certificate dengan certbot
+    echo "   Generating Let's Encrypt certificate..."
+    
+    # Stop Apache sementara untuk standalone mode
+    systemctl stop apache2
+    
+    # Generate certificate
+    if certbot certonly --standalone -d "$domain" --non-interactive --agree-tos --email "admin@$domain" --expand; then
+        echo "✅ Let's Encrypt certificate berhasil dibuat"
+        
+        # Set SSL paths
+        SSL_CERT_PATH="/etc/letsencrypt/live/$domain/fullchain.pem"
+        SSL_KEY_PATH="/etc/letsencrypt/live/$domain/privkey.pem"
+        
+        # Start Apache kembali
+        systemctl start apache2
+        
+        # Setup auto-renewal
+        setup_certbot_renewal
+        
+        return 0
+    else
+        echo "❌ Gagal membuat Let's Encrypt certificate"
+        echo "   Menggunakan self-signed certificate sebagai fallback"
+        
+        # Start Apache kembali
+        systemctl start apache2
+        
+        # Fallback to self-signed
+        create_self_signed_cert "$domain"
+        return 1
+    fi
+}
+
+# Fungsi untuk setup certbot auto-renewal
+setup_certbot_renewal() {
+    echo "🔄 Setting up auto-renewal untuk Let's Encrypt..."
+    
+    # Buat systemd timer untuk renewal
+    cat > /etc/systemd/system/certbot-renewal.service << 'EOF'
+[Unit]
+Description=Certbot Renewal
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/certbot renew --quiet --post-hook "systemctl reload apache2"
+EOF
+
+    cat > /etc/systemd/system/certbot-renewal.timer << 'EOF'
+[Unit]
+Description=Run certbot renewal twice daily
+Requires=certbot-renewal.service
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    # Enable dan start timer
+    systemctl daemon-reload
+    systemctl enable certbot-renewal.timer
+    systemctl start certbot-renewal.timer
+    
+    echo "✅ Auto-renewal berhasil disetup"
+    echo "   Certificate akan auto-renew setiap 12 jam"
+}
+
+# Cek apakah certbot tersedia
+if ! command -v certbot >/dev/null 2>&1; then
+    echo "⚠️ Certbot tidak ditemukan. Menginstall certbot..."
+    apt update
+    apt install -y certbot python3-certbot-apache
+    
+    if ! command -v certbot >/dev/null 2>&1; then
+        echo "❌ Gagal menginstall certbot"
+        exit 1
+    fi
+    echo "✅ Certbot berhasil diinstall"
+fi
+
+# Validasi domain untuk Let's Encrypt (harus public domain)
+if [[ "$DOMAIN" == *.local ]] || [[ "$DOMAIN" == localhost* ]] || [[ "$DOMAIN" == *test* ]]; then
+    echo "⚠️ Domain lokal terdeteksi: $DOMAIN"
+    echo "   Let's Encrypt hanya bekerja untuk domain public yang dapat diakses dari internet"
+    echo ""
+    echo "Pilih opsi SSL:"
+    echo "1. Skip SSL (HTTP only) - untuk development"
+    echo "2. Self-signed certificate - untuk testing"
+    echo "3. Let's Encrypt - untuk production (domain harus public)"
+    echo ""
+    read -p "Pilih opsi SSL (1-3): " SSL_OPTION
+    
+    case $SSL_OPTION in
+        1)
+            USE_SSL=false
+            echo "⚠️ Website akan dibuat tanpa SSL (HTTP only)"
+            ;;
+        2)
+            USE_SSL=true
+            SSL_TYPE="self-signed"
+            echo "🔐 Akan menggunakan self-signed certificate"
+            ;;
+        3)
+            USE_SSL=true
+            SSL_TYPE="letsencrypt"
+            echo "🔐 Akan menggunakan Let's Encrypt"
+            echo "⚠️ Pastikan domain dapat diakses dari internet"
+            ;;
+        *)
+            echo "❌ Pilihan tidak valid"
+            exit 1
+            ;;
+    esac
+else
+    USE_SSL=true
+    SSL_TYPE="letsencrypt"
+    echo "🔐 Domain public terdeteksi. Akan menggunakan Let's Encrypt"
 fi
 
 echo ""
@@ -510,7 +675,25 @@ if [ -f "$VHOST_FILE" ]; then
     cp "$VHOST_FILE" "$BACKUP_DIR/${USERNAME}_vhost_$DATE.conf.backup"
 fi
 
-cat > "$VHOST_FILE" <<EOF
+# Buat konfigurasi berdasarkan opsi SSL
+if [ "$USE_SSL" = true ]; then
+    echo "🔐 Mengkonfigurasi SSL..."
+    
+    # Setup SSL certificate berdasarkan type
+    case $SSL_TYPE in
+        "letsencrypt")
+            if ! setup_letsencrypt "$DOMAIN"; then
+                echo "⚠️ Let's Encrypt gagal, menggunakan self-signed"
+                create_self_signed_cert "$DOMAIN"
+            fi
+            ;;
+        "self-signed")
+            create_self_signed_cert "$DOMAIN"
+            ;;
+    esac
+    
+    # Konfigurasi VHost dengan SSL
+    cat > "$VHOST_FILE" <<EOF
 # HTTP to HTTPS Redirect
 <VirtualHost *:80>
     ServerName $DOMAIN
@@ -534,8 +717,14 @@ cat > "$VHOST_FILE" <<EOF
 
     # SSL Configuration
     SSLEngine on
-    SSLCertificateFile /etc/ssl/univbatam/fullchain.crt
-    SSLCertificateKeyFile /etc/ssl/univbatam/private.key
+    SSLCertificateFile $SSL_CERT_PATH
+    SSLCertificateKeyFile $SSL_KEY_PATH
+    
+    # Modern SSL Configuration
+    SSLProtocol all -SSLv3 -TLSv1 -TLSv1.1
+    SSLCipherSuite ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384
+    SSLHonorCipherOrder off
+    SSLSessionTickets off
     
     # Security headers
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -573,6 +762,58 @@ cat > "$VHOST_FILE" <<EOF
     LogLevel warn
 </VirtualHost>
 EOF
+
+    echo "✅ Apache vhost dengan SSL berhasil dikonfigurasi"
+    echo "   SSL Certificate: $SSL_CERT_PATH"
+    echo "   SSL Private Key: $SSL_KEY_PATH"
+    
+else
+    # Konfigurasi VHost tanpa SSL (HTTP only)
+    cat > "$VHOST_FILE" <<EOF
+# HTTP Only VirtualHost
+<VirtualHost *:80>
+    ServerName $DOMAIN
+    DocumentRoot $DOC_ROOT
+    
+    # Security headers (tanpa HTTPS)
+    Header always set X-Frame-Options "DENY"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Directory configuration
+    <Directory $DOC_ROOT>
+        Options -Indexes +FollowSymLinks
+        AllowOverride All
+        Require all granted
+        
+        # Protect sensitive files
+        <Files ~ "^\.">
+            Require all denied
+        </Files>
+        
+        <Files ~ "\.(log|ini|conf)$">
+            Require all denied
+        </Files>
+    </Directory>
+
+    # PHP-FPM Configuration
+    <FilesMatch \.php$>
+        SetHandler "proxy:unix:/run/php/php$PHPVER-fpm-$USERNAME.sock|fcgi://localhost/"
+    </FilesMatch>
+
+    # Logging
+    ErrorLog \${APACHE_LOG_DIR}/$DOMAIN.error.log
+    CustomLog \${APACHE_LOG_DIR}/$DOMAIN.access.log combined
+    
+    # Log level for debugging (change to warn for production)
+    LogLevel warn
+</VirtualHost>
+EOF
+
+    echo "✅ Apache vhost (HTTP only) berhasil dikonfigurasi"
+    echo "⚠️ Website tidak menggunakan SSL/HTTPS"
+fi
 
 # Test konfigurasi Apache
 if ! apache2ctl configtest; then
@@ -755,16 +996,61 @@ fi
 
 # Test website accessibility
 sleep 2  # Tunggu sebentar untuk Apache reload
-if curl -s -k "https://$DOMAIN" -o /dev/null; then
-    echo "✅ Website dapat diakses via HTTPS"
-elif curl -s "http://$DOMAIN" -o /dev/null; then
-    echo "✅ Website dapat diakses via HTTP"
+
+if [ "$USE_SSL" = true ]; then
+    echo "🔍 Testing HTTPS access..."
+    if curl -s -k "https://$DOMAIN" -o /dev/null; then
+        echo "✅ Website dapat diakses via HTTPS"
+        
+        # Test SSL certificate
+        if [ "$SSL_TYPE" = "letsencrypt" ]; then
+            echo "🔐 Verifying Let's Encrypt certificate..."
+            if openssl s_client -connect "$DOMAIN:443" -servername "$DOMAIN" </dev/null 2>/dev/null | grep -q "Verify return code: 0"; then
+                echo "✅ Let's Encrypt certificate valid"
+            else
+                echo "⚠️ Let's Encrypt certificate mungkin belum aktif sepenuhnya"
+            fi
+        fi
+        
+    else
+        echo "❌ Website tidak dapat diakses via HTTPS"
+        echo "   Checking HTTP fallback..."
+        
+        if curl -s "http://$DOMAIN" -o /dev/null; then
+            echo "✅ Website dapat diakses via HTTP"
+            echo "⚠️ HTTPS redirect mungkin tidak berfungsi"
+        else
+            echo "❌ Website tidak dapat diakses"
+            echo "   Periksa konfigurasi DNS atau hosts file"
+        fi
+    fi
 else
-    echo "⚠️ Website tidak dapat diakses dari localhost"
-    echo "   Periksa konfigurasi DNS atau hosts file"
+    echo "🔍 Testing HTTP access..."
+    if curl -s "http://$DOMAIN" -o /dev/null; then
+        echo "✅ Website dapat diakses via HTTP"
+    else
+        echo "❌ Website tidak dapat diakses"
+        echo "   Periksa konfigurasi DNS atau hosts file"
+    fi
+fi
+
+# Test PHP functionality
+echo "🐘 Testing PHP functionality..."
+if curl -s -k "https://$DOMAIN/index.php" 2>/dev/null | grep -q "Website Aktif" || curl -s "http://$DOMAIN/index.php" 2>/dev/null | grep -q "Website Aktif"; then
+    echo "✅ PHP berfungsi dengan baik"
+else
+    echo "⚠️ PHP mungkin tidak berfungsi dengan baik"
 fi
 
 # Buat file info untuk troubleshooting
+SSL_INFO=""
+if [ "$USE_SSL" = true ]; then
+    SSL_INFO="SSL Type: $SSL_TYPE
+SSL Certificate: $SSL_CERT_PATH
+SSL Private Key: $SSL_KEY_PATH
+"
+fi
+
 cat > "$DOC_ROOT/info.txt" <<EOF
 Website Info - $DOMAIN
 ========================
@@ -774,16 +1060,23 @@ Socket: $SOCK_FILE
 Database: $DB_NAME
 User: $DB_USER
 Document Root: $DOC_ROOT
+SSL Enabled: $USE_SSL
+$SSL_INFO
 Log Files:
 - Apache Error: /var/log/apache2/$DOMAIN.error.log
 - Apache Access: /var/log/apache2/$DOMAIN.access.log
 - PHP-FPM: /var/log/php/$USERNAME-fpm.log
+
+SSL Commands:
+- Check certificate: openssl s_client -connect $DOMAIN:443 -servername $DOMAIN
+- Renew Let's Encrypt: certbot renew --dry-run
+- Check renewal timer: systemctl status certbot-renewal.timer
 EOF
 
 chown "$USERNAME:$USERNAME" "$DOC_ROOT/info.txt"
 chmod 640 "$DOC_ROOT/info.txt"
 
-log_action "Website $DOMAIN created successfully with PHP $PHPVER"
+log_action "Website $DOMAIN created successfully with PHP $PHPVER and SSL: $USE_SSL ($SSL_TYPE)"
 
 # Disable trap karena sudah selesai
 trap - ERR
@@ -800,7 +1093,21 @@ echo "🌐 Apache VHost  : $VHOST_FILE"
 echo "�️  Database Name : $DB_NAME"
 echo "👤 Database User : $DB_USER"
 echo "🔑 Database Pass : $MYSQL_PASSWORD"
-echo "🔒 SSL/HTTPS     : Enabled"
+
+# SSL Information
+if [ "$USE_SSL" = true ]; then
+    echo "🔒 SSL Status    : Enabled ($SSL_TYPE)"
+    echo "📜 SSL Cert     : $SSL_CERT_PATH"
+    echo "🔐 SSL Key      : $SSL_KEY_PATH"
+    
+    if [ "$SSL_TYPE" = "letsencrypt" ]; then
+        echo "🔄 Auto-renewal : Enabled (setiap 12 jam)"
+    elif [ "$SSL_TYPE" = "self-signed" ]; then
+        echo "⚠️ Self-signed  : Valid untuk 365 hari"
+    fi
+else
+    echo "🔒 SSL Status    : Disabled (HTTP only)"
+fi
 echo ""
 echo "� File Log:"
 echo "   SSH Passwords : $PASSLOG"
@@ -809,13 +1116,43 @@ echo "   Activity Log  : /var/log/website-management.log"
 echo "   Config Backup : $BACKUP_DIR/"
 echo ""
 echo "🌍 Akses Website:"
-echo "   HTTP  : http://$DOMAIN (redirect ke HTTPS)"
-echo "   HTTPS : https://$DOMAIN"
-echo "   Info  : https://$DOMAIN/info.txt"
+
+if [ "$USE_SSL" = true ]; then
+    echo "   HTTP  : http://$DOMAIN (redirect ke HTTPS)"
+    echo "   HTTPS : https://$DOMAIN"
+    echo "   Info  : https://$DOMAIN/info.txt"
+else
+    echo "   HTTP  : http://$DOMAIN"
+    echo "   Info  : http://$DOMAIN/info.txt"
+fi
 echo ""
 echo "💡 Tips:"
 echo "   - Upload file ke: $DOC_ROOT/"
 echo "   - Cek error log: tail -f /var/log/apache2/$DOMAIN.error.log"
 echo "   - Test PHP: systemctl status php$PHPVER-fpm"
 echo "   - Restart services: systemctl restart php$PHPVER-fpm apache2"
+
+if [ "$USE_SSL" = true ]; then
+    echo ""
+    echo "🔒 SSL Management:"
+    if [ "$SSL_TYPE" = "letsencrypt" ]; then
+        echo "   - Cek certificate: certbot certificates"
+        echo "   - Renew manual: certbot renew"
+        echo "   - Test renewal: certbot renew --dry-run"
+        echo "   - Check timer: systemctl status certbot-renewal.timer"
+    elif [ "$SSL_TYPE" = "self-signed" ]; then
+        echo "   - Certificate valid: 365 hari"
+        echo "   - Generate baru: openssl req -new -x509 -key $SSL_KEY_PATH -out $SSL_CERT_PATH -days 365"
+    fi
+fi
+
+echo ""
+echo "🚨 Troubleshooting:"
+echo "   - Check Apache config: apache2ctl configtest"
+echo "   - Check PHP-FPM: systemctl status php$PHPVER-fpm"
+echo "   - Check website: curl -I http://$DOMAIN"
+
+if [ "$USE_SSL" = true ]; then
+    echo "   - Check SSL: openssl s_client -connect $DOMAIN:443 -servername $DOMAIN"
+fi
 
