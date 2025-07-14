@@ -23,13 +23,9 @@ CONFIG_DIR="/etc"
 # Display header
 show_header() {
     clear
-    echo -e "${CYAN}╔══════════════════════════════════════════════════════════════╗${RES    echo -e "${BOLD}🚀 QUICK START:${RESET}"
-    echo -e "${WHITE}• Run main toolkit: ${CYAN}sudo toolkit${RESET}"
-    echo -e "${WHITE}• Add website: ${CYAN}sudo add-website${RESET}"
-    echo -e "${WHITE}• Check website info: ${CYAN}sudo website-info${RESET}"
-    echo -e "${WHITE}• Check PHP versions: ${CYAN}sudo check-php${RESET}"
-    echo -e "${WHITE}• Manage PHP versions: ${CYAN}sudo manage-php${RESET}"
-    echo -e "${WHITE}• Backup to GDrive: ${CYAN}sudo backup-gdrive${RESET}"   echo -e "${CYAN}║${RESET}${BOLD}            SERVER MANAGEMENT TOOLKIT INSTALLER              ${RESET}${CYAN}║${RESET}"
+    echo -e "${CYAN}╔═══════════════════════════════════════════════════════    echo -e "${BOLD}🐘 PHP VERSIONS INSTALLED:${RESET}"
+    for version in "${php_versions[@]}"; do════╗${RESET}"
+    echo -e "${CYAN}║${RESET}${BOLD}            SERVER MANAGEMENT TOOLKIT INSTALLER              ${RESET}${CYAN}║${RESET}"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════╣${RESET}"
     echo -e "${CYAN}║${RESET} ${WHITE}Version: 1.0                                               ${RESET} ${CYAN}║${RESET}"
     echo -e "${CYAN}║${RESET} ${WHITE}Author: Oji Fahruroji (ojifahru83@gmail.com)              ${RESET} ${CYAN}║${RESET}"
@@ -120,12 +116,6 @@ install_dependencies() {
         fi
     done
     
-    # Add Ondrej's PPA for multiple PHP versions
-    ppa_added=false
-    if add_ondrej_ppa; then
-        ppa_added=true
-    fi
-    
     # Install multiple PHP versions with extensions
     echo -e "${CYAN}   Installing PHP versions and extensions...${RESET}"
     # php_versions array is set by select_php_versions() function
@@ -213,8 +203,7 @@ create_directories() {
     chmod 755 "$LOG_DIR/php"
     chown root:adm "$LOG_DIR/php"
     
-    # Create PHP-FPM pool directories for all versions
-    php_versions=("7.4" "8.0" "8.1" "8.2" "8.3")
+    # Create PHP-FPM pool directories for selected versions
     for version in "${php_versions[@]}"; do
         if [ -d "/etc/php/$version" ]; then
             mkdir -p "/etc/php/$version/fpm/pool.d"
@@ -438,8 +427,7 @@ run_tests() {
         return 1
     fi
     
-    # Test PHP-FPM services for all versions
-    php_versions=("7.4" "8.0" "8.1" "8.2" "8.3")
+    # Test PHP-FPM services for selected versions
     php_working=false
     
     for version in "${php_versions[@]}"; do
@@ -545,6 +533,32 @@ show_completion() {
     echo
 }
 
+# Show PHP repository information
+show_repository_info() {
+    echo -e "${CYAN}📦 PHP Repository Information${RESET}"
+    echo -e "${CYAN}═══════════════════════════════════════════════════════════════${RESET}"
+    
+    if [[ "$OS" == *"Ubuntu"* || "$OS" == *"Debian"* ]]; then
+        echo -e "${WHITE}• Primary Repository: Ondrej Surý's PPA${RESET}"
+        echo -e "${WHITE}• Repository URL: ppa:ondrej/php${RESET}"
+        echo -e "${WHITE}• Supports: Ubuntu 18.04+, Debian 9+${RESET}"
+        echo -e "${WHITE}• Provides: PHP 7.4, 8.0, 8.1, 8.2, 8.3 with all extensions${RESET}"
+        echo -e "${WHITE}• Maintainer: Ondrej Surý (Debian PHP maintainer)${RESET}"
+        echo -e "${WHITE}• Official: Yes - Recommended by PHP.net${RESET}"
+    elif [[ "$OS" == *"CentOS"* || "$OS" == *"Red Hat"* ]]; then
+        echo -e "${WHITE}• Primary Repository: Remi's RPM Repository${RESET}"
+        echo -e "${WHITE}• Repository URL: https://rpms.remirepo.net/${RESET}"
+        echo -e "${WHITE}• Supports: CentOS 7+, RHEL 7+, Fedora${RESET}"
+        echo -e "${WHITE}• Provides: Multiple PHP versions with extensions${RESET}"
+        echo -e "${WHITE}• Maintainer: Remi Collet${RESET}"
+        echo -e "${WHITE}• Official: Widely trusted third-party repository${RESET}"
+    else
+        echo -e "${YELLOW}• System: $OS (using default repositories)${RESET}"
+        echo -e "${YELLOW}• Note: May have limited PHP versions available${RESET}"
+    fi
+    echo
+}
+
 # Add PPA with error handling
 add_ondrej_ppa() {
     echo -e "${CYAN}   Adding Ondrej's PPA for multiple PHP versions...${RESET}"
@@ -569,6 +583,8 @@ add_ondrej_ppa() {
 
 # Interactive PHP version selection
 select_php_versions() {
+    show_repository_info
+    
     echo -e "${CYAN}🐘 PHP Version Selection${RESET}"
     echo -e "${CYAN}═══════════════════════════════════════════════════════════════${RESET}"
     echo -e "${WHITE}Choose PHP installation method:${RESET}"
@@ -747,6 +763,9 @@ main() {
     # Check requirements
     check_requirements
     
+    # Show repository information
+    show_repository_info
+    
     # Select PHP versions to install
     select_php_versions
     
@@ -771,6 +790,7 @@ main() {
     # Installation steps
     echo -e "${CYAN}Starting installation...${RESET}"
     
+    add_ondrej_ppa
     install_dependencies
     create_directories
     install_scripts
